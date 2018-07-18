@@ -44,10 +44,6 @@ parser.add_argument(
     help='Which metric to use for the distance between embeddings.')
 
 parser.add_argument(
-    '--filename', type=FileType('w'),
-    help='Optional name of the json file to store the results in.')
-
-parser.add_argument(
     '--batch_size', default=256, type=common.positive_int,
     help='Batch size used during evaluation, adapt based on your memory usage.')
 
@@ -114,13 +110,8 @@ def main():
             # Keep track of statistics. Invert distances to scores using any
             # arbitrary inversion, as long as it's monotonic and well-behaved,
             # it won't change anything.
-            scores = 1 / (1 + distances)
             for i in range(len(distances)):
                 print(gallery_fids[np.argsort(distances[i])[0]])
-
-    # Save important data
-    # if args.filename is not None:
-    #     json.dump({'mAP': mean_ap, 'CMC': list(cmc), 'aps': list(aps)}, args.filename)
 
 if __name__ == '__main__':
     main()

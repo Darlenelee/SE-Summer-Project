@@ -94,11 +94,65 @@ def five_crops(image, crop_size):
     bottom_right = image[crop_margin[0]:, crop_margin[1]:]
     return center, top_left, top_right, bottom_left, bottom_right
 
+def arr_to_tensor(fid, arr):
+    tx = tf.convert_to_tensor(arr)
+    tx = tf.image.resize_images(tx, (256,128))   
+    return tx   
+
+def run_inference_for_single_image(image, graph):
+  with graph.as_default():
+    with tf.Session() as sess:
+      # Get handles to input and output tensors
+      ops = tf.get_default_graph().get_operations()
+      all_tensor_names = {output.name for op in ops for output in op.outputs}
+      tensor_dict = {}
+      for key in [
+          'num_detections', 'detection_boxes', 'detection_scores',
+          'detection_classes', 'detection_masks'
+      ]:
+        tensor_name = key + ':0'
+        if tensor_name in all_tensor_names:
+          tensor_dict[key] = tf.get_default_graph().get_tensor_by_name(
+              tensor_name)
+      if 'detection_masks' in tensor_dict:
+        # The following processing is only for single image
+        detection_boxes = tf.squeeze(tensor_dict['detection_boxes'], [0])
+        detection_masks = tf.squeeze(tensor_dict['detection_masks'], [0])
+        # Reframe is required to translate mask from box coordinates to image coordinates and fit the image size.
+        real_num_detection = tf.cast(tensor_dict['num_detections'][0], tf.int32)
+        detection_boxes = tf.slice(detection_boxes, [0, 0], [real_num_detection, -1])
+        detection_masks = tf.slice(detection_masks, [0, 0, 0], [real_num_detection, -1, -1])
+        detection_masks_reframed = utils_ops.reframe_box_masks_to_image_masks(
+            detection_masks, detection_boxes, image.shape[0], image.shape[1])
+        detection_masks_reframed = tf.cast(
+            tf.greater(detection_masks_reframed, 0.5), tf.uint8)
+        # Follow the convention by adding back the batch dimension
+        tensor_dict['detection_masks'] = tf.expand_dims(
+            detection_masks_reframed, 0)
+      image_tensor = tf.get_default_graph().get_tensor_by_name('image_tensor:0')
+
+      # Run inference
+      output_dict = sess.run(tensor_dict,
+                             feed_dict={image_tensor: np.expand_dims(image, 0)})
+
+      # all outputs are float32 numpy arrays, so convert types as appropriate
+      output_dict['num_detections'] = int(output_dict['num_detections'][0])
+      output_dict['detection_classes'] = output_dict[
+          'detection_classes'][0].astype(np.uint8)
+      output_dict['detection_boxes'] = output_dict['detection_boxes'][0]
+      output_dict['detection_scores'] = output_dict['detection_scores'][0]
+      if 'detection_masks' in output_dict:
+        output_dict['detection_masks'] = output_dict['detection_masks'][0]
+  return output_dict
+
+ # video
+
 
 def main():
     # Verify that parameters are set correctly.
     args = parser.parse_args()
-
+    
+   
     # Possibly auto-generate the output filename.
     if args.filename is None:
         basename = os.path.basename(args.dataset)
@@ -145,19 +199,23 @@ def main():
 
     # Load the data from the CSV file.
     _, data_fids = common.load_dataset(args.dataset, args.image_root)
-
+    print(data_fids)
     net_input_size = (args.net_input_height, args.net_input_width)
     pre_crop_size = (args.pre_crop_height, args.pre_crop_width)
 
     # Setup a tf Dataset containing all images.
     dataset = tf.data.Dataset.from_tensor_slices(data_fids)
-
+    print(dataset)
     # Convert filenames to actual image tensors.
     dataset = dataset.map(
-        lambda fid: common.fid_to_image(
-            fid, tf.constant('dummy'), image_root=args.image_root,
-            image_size=pre_crop_size if args.crop_augment else net_input_size),
+        #lambda fid: common.fid_to_image(
+        #    fid, tf.constant('dummy'), image_root=args.image_root,
+        #    image_size=pre_crop_size if args.crop_augment else net_input_size),
+        lambda fid: arr_to_tensor(fid, [[[0,0,0],[0,0,0]],[[0,0,0],[0,0,0]],[[0,0,0],[0,0,0]]]),
         num_parallel_calls=args.loading_threads)
+        
+    print(dataset)
+    
 
     # Augment the data if specified by the arguments.
     # `modifiers` is a list of strings that keeps track of which augmentations
