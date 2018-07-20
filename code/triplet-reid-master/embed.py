@@ -9,8 +9,54 @@ import json
 import numpy as np
 import tensorflow as tf
 
+import six.moves.urllib as urllib
+import sys
+import tarfile
+
+import zipfile
+import csv
+from collections import defaultdict
+from io import StringIO
+from matplotlib import pyplot as plt
+from PIL import Image
+from copy import copy
+from moviepy.editor import VideoFileClip
+
+import cv2
 from aggregators import AGGREGATORS
 import common
+from utils import label_map_util
+from utils import visualization_utils as vis_util
+MODEL_NAME = 'ssdlite_mobilenet_v2_coco_2018_05_09'  #ssd_mobilenet_v1_coco_2017_11_17
+MODEL_FILE = MODEL_NAME + '.tar.gz'
+PATH_TO_CKPT = MODEL_NAME + '/frozen_inference_graph.pb'
+
+# List of the strings that is used to add correct label for each box.
+PATH_TO_LABELS = os.path.join('data', 'mscoco_label_map.pbtxt')
+
+NUM_CLASSES = 90
+# Download
+#opener = urllib.request.URLopener()
+#opener.retrieve(DOWNLOAD_BASE + MODEL_FILE, MODEL_FILE)
+tar_file = tarfile.open(MODEL_FILE)
+for file in tar_file.getmembers():
+  file_name = os.path.basename(file.name)
+  if 'frozen_inference_graph.pb' in file_name:
+    tar_file.extract(file, os.getcwd())
+
+## Load a (frozen) Tensorflow model into memory.
+detection_graph = tf.Graph()
+with detection_graph.as_default():
+  od_graph_def = tf.GraphDef()
+  with tf.gfile.GFile(PATH_TO_CKPT, 'rb') as fid:
+    serialized_graph = fid.read()
+    od_graph_def.ParseFromString(serialized_graph)
+    tf.import_graph_def(od_graph_def, name='')
+
+## Loading label map
+label_map = label_map_util.load_labelmap(PATH_TO_LABELS)
+categories = label_map_util.convert_label_map_to_categories(label_map, max_num_classes=NUM_CLASSES, use_display_name=True)
+category_index = label_map_util.create_category_index(categories)
 
 parser = ArgumentParser(description='Embed a dataset using a trained network.')
 
@@ -71,6 +117,9 @@ parser.add_argument(
     '--quiet', action='store_true', default=False,
     help='Don\'t be so verbose.')
 
+parser.add_argument(
+    '--videoname', default='video2.mp4',
+    help='Input video file to detect.')
 
 def flip_augment(image, fid, pid):
     """ Returns both the original and the horizontal flip of an image. """
@@ -152,7 +201,6 @@ def main():
     # Verify that parameters are set correctly.
     args = parser.parse_args()
     
-   
     # Possibly auto-generate the output filename.
     if args.filename is None:
         basename = os.path.basename(args.dataset)
@@ -197,11 +245,46 @@ def main():
         for key, value in sorted(vars(args).items()):
             print('{}: {}'.format(key, value))
 
+    # do object detection first 
+    data_fids = []
+    clip1 = VideoFileClip(args.videoname).subclip(120,130).without_audio().set_fps(1)
+    index = 0
+    csvFile = open('info_query.csv','w')
+    #writer = csv.writer(csvFile)
+    for image_np in clip1.iter_frames(1,False,True,None):
+        # save origin picture for chopping
+        origin_np = copy(image_np)
+        # Expand dimensions since the model expects images to have shape: [1, None, None, 3]
+        # image_np_expanded = np.expand_dims(image_np, axis=0)
+        # Actual detection.
+        output_dict = run_inference_for_single_image(image_np, detection_graph)
+        img_size=[len(image_np[0]),len(image_np)]
+
+        for j in range(0,5):
+            if output_dict['detection_scores'][j] < 0.5:
+                break
+            p1=(output_dict['detection_boxes'][j][1]*img_size[0]).round()
+            p2=(output_dict['detection_boxes'][j][0]*img_size[1]).round()
+            p3=(output_dict['detection_boxes'][j][3]*img_size[0]).round()
+            p4=(output_dict['detection_boxes'][j][2]*img_size[1]).round()
+            region_np = origin_np[int(p2):int(p4),int(p1):int(p3)]
+            #img=Image.fromarray(region_np)
+            #relativePath = 'results/'+str(index)+'-'+str(j)+'.jpg'
+            #resultFileName=os.getcwd()+'/' +relativePath
+            #writer.writerow([index+1,relativePath])
+            #writer.writerow([index+1,relativePath])
+            data_fids.append(str(index)+'-'+str(j)+'.jpg')
+            #img.save(resultFileName)
+            plt.figure(figsize=(1920,1080))
+
+        index=index+1
+    csvFile.close()
+
     # Load the data from the CSV file.
-    _, data_fids = common.load_dataset(args.dataset, args.image_root)
+    #_, data_fids = common.load_dataset(args.dataset, args.image_root)
     print(data_fids)
     net_input_size = (args.net_input_height, args.net_input_width)
-    pre_crop_size = (args.pre_crop_height, args.pre_crop_width)
+    #pre_crop_size = (args.pre_crop_height, args.pre_crop_width)
 
     # Setup a tf Dataset containing all images.
     dataset = tf.data.Dataset.from_tensor_slices(data_fids)
@@ -211,7 +294,7 @@ def main():
         #lambda fid: common.fid_to_image(
         #    fid, tf.constant('dummy'), image_root=args.image_root,
         #    image_size=pre_crop_size if args.crop_augment else net_input_size),
-        lambda fid: arr_to_tensor(fid, [[[0,0,0],[0,0,0]],[[0,0,0],[0,0,0]],[[0,0,0],[0,0,0]]]),
+        #lambda fid: arr_to_tensor(fid, arr),
         num_parallel_calls=args.loading_threads)
         
     print(dataset)
